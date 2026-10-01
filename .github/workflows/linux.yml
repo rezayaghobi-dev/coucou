@@ -1,0 +1,119 @@
+name: Linux
+
+# Builds the Linux app (.deb and AppImage). Triggered by tags like `linux-v0.1.1`;
+# the macOS and Windows workflows are untouched.
+
+on:
+  push:
+    tags:
+      - 'linux-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 2 on Linux: webkit2gtk-4.1, GTK, the Ayatana appindicator and the
+      # Secret Service are all required to compile.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config \
+            libdbus-1-dev libssl-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libsecret-1-dev libxdo-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: linux-cargo-${{ hashFiles('windows/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Four files carry the version and they drift silently. Shipping a "0.1.1"
+      # that installs a 0.1.0 is the kind of thing nobody notices until a bug
+      # report arrives against the wrong build.
+      - name: Check the tag and every version agree
+        if: startsWith(github.ref, 'refs/tags/linux-v')
+        run: |
+          tag="${{ github.ref_name }}"; tag="${tag#linux-v}"
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          cargo=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=$tag tauri.conf=$conf package.json=$pkg Cargo.toml=$cargo"
+          bad=""
+          [ "$tag" = "$conf" ]  || bad="$bad tauri.conf.json says $conf;"
+          [ "$tag" = "$pkg" ]   || bad="$bad package.json says $pkg;"
+          [ "$tag" = "$cargo" ] || bad="$bad Cargo.toml says $cargo;"
+          if [ -n "$bad" ]; then echo "tag says $tag but$bad" >&2; exit 1; fi
+
+      - name: Build the bundles
+        id: pack
+        run: |
+          npm run pack
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          ls -la release
+
+      - name: Also attach the AppImage
+        # npm run pack builds both, but only if the AppImage toolchain succeeded.
+        # Asserting here makes a silent AppImage failure loud.
+        run: test -f release/Coucou-latest-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Coucou-Linux
+          path: |
+            windows/release/Coucou-*-amd64.deb
+            windows/release/Coucou-*-x86_64.AppImage
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/linux-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.pack.outputs.version }}"
+          notes=$(cat <<EOF
+          Coucou for Linux $v — Mochi at the top of your screen.
+
+          Install the .deb (Debian/Ubuntu/Mint):
+
+              sudo apt install ./Coucou-$v-amd64.deb
+
+          Or run the AppImage (needs libfuse2):
+
+              chmod +x Coucou-$v-x86_64.AppImage
+              ./Coucou-$v-x86_64.AppImage
+          EOF
+          )
+          # --latest=false is deliberate: the site's "Download for Mac" button
+          # points at /releases/latest, so a Linux tag must never take that slot.
+          gh release create "${{ github.ref_name }}" \
+            "release/Coucou-$v-amd64.deb" \
+            "release/Coucou-$v-x86_64.AppImage" \
+            --title "Coucou for Linux $v" \
+            --notes "$notes" \
+            --latest=false
