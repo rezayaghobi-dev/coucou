@@ -68,6 +68,24 @@ in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
+## OpenCode
+
+Coucou also speaks to [OpenCode](https://opencode.ai), through a plugin instead
+of hooks: **Settings… → OpenCode → Install plugin…**. Same care as the hooks —
+you see the exact file that will be written, a dated backup is taken, and
+nothing is written until you click. The plugin lands in
+`~/.config/opencode/plugins/` and works in every project; uninstalling removes
+only Coucou's file. Restart OpenCode after installing.
+
+The plugin talks to the island over the same socket protocol as `coucou-hook`,
+and follows the same hard rule — Coucou closed, paused or slow means OpenCode
+asks in the terminal, and nothing ever blocks a session.
+
+| OpenCode | What you get |
+|---|---|
+| **v1.x (verified on 1.18.34)** | Sessions, prompts, tool steps and completion in the island. Permission approval stays in the terminal — v1 has no plugin permission API (its `permission.ask` hook is defined but never triggered). |
+| **v2.x** | Everything above **plus Allow / Deny from the island**, via `permission.evaluate`. |
+
 ## Chat and keys
 
 **Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows

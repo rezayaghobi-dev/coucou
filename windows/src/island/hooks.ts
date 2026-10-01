@@ -23,6 +23,8 @@ interface HookPayload {
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  /** Which agent sent the event: "claude" (default) or "opencode". */
+  agent?: string;
 }
 
 const PROJECT_ALIASES: Record<string, string> = {
@@ -134,6 +136,12 @@ function handleHook(island: Island, payload: HookPayload) {
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
+  // Claude Code keeps the plain project name, exactly like the prototype;
+  // other agents earn a suffix so two pills never look identical.
+  const taskName =
+    payload.agent && payload.agent !== "claude"
+      ? `${projectName} · ${payload.agent.charAt(0).toUpperCase()}${payload.agent.slice(1)}`
+      : projectName;
   const focused = State.focusId === CLAUDE_ID;
 
   /** Alerts force the island open; work events only reveal the compact island. */
@@ -149,13 +157,13 @@ function handleHook(island: Island, payload: HookPayload) {
 
   switch (name) {
     case "SessionStart":
-      upsert(projectName, cwd);
+      upsert(taskName, cwd);
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
-      upsert(projectName, cwd);
+      upsert(taskName, cwd);
       State.updateTask(CLAUDE_ID, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
@@ -165,7 +173,7 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "PreToolUse": {
-      upsert(projectName, cwd);
+      upsert(taskName, cwd);
       State.updateTask(CLAUDE_ID, "working");
       const tool = payload.tool_name ?? "Tool";
       State.appendStep(CLAUDE_ID, stepLabel(tool, payload.tool_input ?? {}));
@@ -236,7 +244,7 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      upsert(taskName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};

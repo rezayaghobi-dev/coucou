@@ -123,6 +123,12 @@ fn read_event() -> Option<(String, String)> {
         }
     }
 
+    // Where the event came from, so the island can tell agents apart. The
+    // OpenCode plugin sends "opencode"; anything without the field is treated
+    // as Claude Code, as it always has been.
+    map.entry("agent")
+        .or_insert_with(|| serde_json::Value::String("claude".into()));
+
     truncate_strings(&mut payload);
 
     let mut line = payload.to_string();

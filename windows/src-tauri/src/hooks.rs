@@ -208,7 +208,7 @@ fn backup_path() -> PathBuf {
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
 /// the question is only "is this still the file I showed the user?".
-fn fingerprint(bytes: &[u8]) -> String {
+pub(crate) fn fingerprint(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         hash ^= *b as u64;
@@ -356,7 +356,8 @@ pub fn ensure_hook_exe(app: &AppHandle) {
 // ── Minimal unified diff (LCS) ────────────────────────────────────────────────
 
 /// settings.json is short, so a plain O(n·m) LCS is the simplest honest diff.
-fn unified_diff(before: &str, after: &str) -> String {
+/// Shared with the OpenCode installer, which previews a one-file diff.
+pub(crate) fn unified_diff(before: &str, after: &str) -> String {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();
     let (n, m) = (a.len(), b.len());
@@ -428,6 +429,12 @@ fn unified_diff(before: &str, after: &str) -> String {
     }
     result
 }
+
+/// Serializes the two filesystem tests (hooks and opencode) that point
+/// HOME/USERPROFILE at a temp directory — that is process-wide state, and the
+/// tests run in parallel threads of one process.
+#[cfg(test)]
+pub(crate) static FS_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -509,6 +516,7 @@ mod tests {
     /// HOME/USERPROFILE at a temp directory, and that is process-wide.
     #[test]
     fn writing_backs_up_preserves_and_refuses_a_changed_file() {
+        let _guard = FS_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();

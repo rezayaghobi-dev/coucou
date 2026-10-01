@@ -5,6 +5,7 @@ mod files;
 mod hooks;
 mod integrations;
 mod log;
+mod opencode;
 mod pipe;
 mod secrets;
 mod settings;
@@ -36,6 +37,7 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
+use opencode::{OpenCodePreview, OpenCodeStatus};
 #[cfg(target_os = "linux")]
 use linux_island::{PollGate, ScreenInfo};
 #[cfg(target_os = "windows")]
@@ -225,7 +227,7 @@ fn open_in_vscode(path: Option<String>) -> bool {
 }
 
 /// Cross-platform `which`: walks $PATH, checks executables.
-fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = dir.join(stem);
@@ -307,6 +309,25 @@ fn hooks_apply(
 #[tauri::command]
 fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
+}
+
+// ── OpenCode plugin ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn opencode_status() -> OpenCodeStatus {
+    opencode::status()
+}
+
+/// Returns the diff the user has to look at before anything is written.
+#[tauri::command]
+fn opencode_preview(install: bool) -> Result<OpenCodePreview, String> {
+    opencode::preview(install)
+}
+
+/// Only ever called from an explicit click in the settings window.
+#[tauri::command]
+fn opencode_apply(install: bool, fingerprint: String) -> Result<String, String> {
+    opencode::write(install, &fingerprint)
 }
 
 /// The island has the card on screen, so the long wait for a human may begin.
@@ -482,6 +503,9 @@ pub fn run() {
             approval_decision,
             approval_ack,
             approval_decline,
+            opencode_status,
+            opencode_preview,
+            opencode_apply,
             log_line,
             chat_send,
             chat_reset,
