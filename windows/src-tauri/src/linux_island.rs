@@ -105,6 +105,17 @@ pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
 }
 
+/// Let the island take keyboard focus while a text field is on screen, then hand
+/// focus back to the window manager. `setup_platform_window` starts it
+/// unfocusable so the island never steals the keyboard when it is just showing a
+/// session.
+pub fn set_activating(win: &WebviewWindow, activating: bool) {
+    let _ = win.set_focusable(activating);
+    if activating {
+        let _ = win.set_focus();
+    }
+}
+
 /// Platform-specific window setup (X11; Wayland is not implemented yet).
 /// Called after the Tauri window is created.
 pub fn setup_platform_window(app: &AppHandle) {

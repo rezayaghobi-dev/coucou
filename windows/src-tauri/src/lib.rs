@@ -146,9 +146,7 @@ fn focus_window(app: AppHandle, focused: bool) {
     #[cfg(target_os = "linux")]
     {
         let Some(win) = linux_island::window(&app) else { return };
-        if focused {
-            let _ = win.set_focus();
-        }
+        linux_island::set_activating(&win, focused);
     }
 }
 

@@ -30,7 +30,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon);
     }
-
-    builder.build(app)?;
+    // The tray is the only way to reach Settings or Quit when the island is
+    // hidden, so a failure here is worth a line in the log.
+    if let Err(err) = builder.build(app) {
+        crate::log::line(format!("tray: build failed: {err}"));
+        return Err(err);
+    }
     Ok(())
 }
