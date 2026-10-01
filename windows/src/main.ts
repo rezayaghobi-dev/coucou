@@ -65,6 +65,11 @@ async function main() {
 
   island.launch();
 
+  // Proves the webview actually executed this bundle — shows up as a `ui booted`
+  // line in ~/.local/share/coucou/coucou.log. Invaluable when the island looks
+  // blank and you cannot tell whether the page loaded at all.
+  void Bridge.log(`ui booted (${IS_TAURI ? "tauri" : "browser"})`);
+
   // In a plain browser there is no wake strip behind the cursor: make the whole
   // page wake the island so the visuals can be checked with `npm run dev`.
   if (!IS_TAURI) {

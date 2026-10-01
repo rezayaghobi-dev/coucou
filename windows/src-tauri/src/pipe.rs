@@ -1,23 +1,9 @@
-// Named-pipe server for coucou-hook.
-//
-// `\\.\pipe\coucou-<sid>` — one instance per connection. Every hook event is
-// forwarded to the island as a `hook` event. `PermissionRequest` is the only one
-// that keeps its connection open: it waits for the island's decision and writes
-// it back on the same pipe, which is how approving from the island works.
-//
-// Claude Code is never blocked by us. Three things guarantee it:
-//   * coucou-hook gives the connection 300 ms and exits cleanly if we are closed;
-//   * we only wait for a human once the island has *confirmed* the card is on
-//     screen, so a paused island or a webview that is not listening costs a few
-//     hundred milliseconds, not two minutes;
-//   * whatever happens we drop the connection after the decision timeout, and
-//     the terminal takes over.
-//
-// What we write back is the bare word `allow` or `deny`. Turning that into the
-// documented hookSpecificOutput JSON is coucou-hook's job, so the wire format
-// Claude Code expects lives in exactly one place.
+// Unix domain socket server for coucou-hook.
+// Socket: $XDG_RUNTIME_DIR/coucou.sock (fallback: ~/.local/share/coucou/coucou.sock)
+// One connection per hook event. PermissionRequest waits for island's decision.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,18 +11,15 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
-use crate::island::WINDOW_LABEL;
 use crate::log;
+use crate::WINDOW_LABEL;
 
 /// Slightly under coucou-hook's own 110 s wait, so we always answer first.
 const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
-/// How long the island gets to say "the card is up". This is the whole of B4:
-/// without it, an island that is paused, hidden behind a crashed webview or
-/// simply not listening would leave Claude Code staring at a prompt nobody can
-/// see for nearly two minutes.
+/// How long the island gets to say "the card is up".
 const ACK_TIMEOUT: Duration = Duration::from_millis(800);
 const MAX_PAYLOAD: usize = 1 << 20;
 
@@ -56,50 +39,57 @@ pub struct Pending(pub Mutex<HashMap<String, mpsc::Sender<Reply>>>);
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// `\\.\pipe\coucou-<sid>` — must match coucou-hook's `pipe_path()` exactly.
-pub fn pipe_name() -> String {
-    let key = crate::win_user::current_user_sid()
-        .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+fn socket_path() -> PathBuf {
+    // Primary: $XDG_RUNTIME_DIR/coucou.sock
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join("coucou.sock");
+    }
+    // Fallback: ~/.local/share/coucou/coucou.sock
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("coucou")
+        .join("coucou.sock")
 }
 
 pub fn start(app: AppHandle) {
+    let path = socket_path();
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Remove stale socket
+    let _ = std::fs::remove_file(&path);
+
     tauri::async_runtime::spawn(async move {
-        let name = pipe_name();
-        // first_pipe_instance also means we refuse to join a pipe somebody else
-        // already owns under our name, rather than serving on top of it.
-        let mut server = match ServerOptions::new().first_pipe_instance(true).create(&name) {
-            Ok(s) => s,
+        let listener = match UnixListener::bind(&path) {
+            Ok(l) => l,
             Err(err) => {
-                log::line(format!("cannot open the relay pipe: {err}"));
+                log::line(format!("cannot bind unix socket {}: {err}", path.display()));
                 return;
             }
         };
+        log::line(format!("hook relay listening on {}", path.display()));
+
         loop {
-            if server.connect().await.is_err() {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                continue;
-            }
-            // Hand the connected instance to a task and listen on a fresh one.
-            let next = match ServerOptions::new().create(&name) {
+            let (stream, _) = match listener.accept().await {
                 Ok(s) => s,
                 Err(err) => {
-                    log::line(format!("cannot reopen the relay pipe: {err}"));
-                    return;
+                    log::line(format!("unix socket accept error: {err}"));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
                 }
             };
-            let connected = std::mem::replace(&mut server, next);
             let app = app.clone();
-            tauri::async_runtime::spawn(async move { handle(app, connected).await });
+            tauri::async_runtime::spawn(async move { handle(app, stream).await });
         }
     });
 }
 
-async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
+async fn handle(app: AppHandle, mut stream: tokio::net::UnixStream) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        match pipe.read(&mut chunk).await {
+        match stream.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
@@ -128,7 +118,6 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     if event != "PermissionRequest" {
         log::line(format!("hook {event}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
-        let _ = pipe.disconnect();
         return;
     }
 
@@ -148,10 +137,9 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     // No decision: say nothing at all. coucou-hook then writes nothing to stdout
     // and Claude Code asks in the terminal, exactly as if Coucou were closed.
     if let Some(d) = decision {
-        let _ = pipe.write_all(format!("{d}\n").as_bytes()).await;
-        let _ = pipe.flush().await;
+        let _ = stream.write_all(format!("{d}\n").as_bytes()).await;
+        let _ = stream.flush().await;
     }
-    let _ = pipe.disconnect();
 }
 
 /// Two waits: a short one for "the card is up", then the long one for a human.
