@@ -329,21 +329,30 @@ pub fn ensure_hook_exe(app: &AppHandle) {
         return;
     };
 
-    let same = match (std::fs::metadata(&src), std::fs::metadata(&dest)) {
-        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
+    // "Already up to date" has to compare contents: fs::copy does not
+    // preserve the mtime on Linux, so a length-and-mtime check never
+    // matches and the hook would be re-copied on every launch.
+    let same = match (std::fs::read(&src), std::fs::read(&dest)) {
+        (Ok(a), Ok(b)) => a == b,
         _ => false,
     };
     if same {
         return;
     }
-    if let Err(err) = std::fs::copy(&src, &dest) {
-        if !dest.exists() {
-            crate::log::line(format!("could not install {}: {err}", exe_name));
-        }
-    }
-    // Make it executable.
+    // Copy beside the destination, then rename over it: rename is
+    // atomic and succeeds while the old binary is still running,
+    // where overwriting it in place fails with "Text file busy".
     use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+    let temp = dest.with_extension("new");
+    let install = std::fs::copy(&src, &temp)
+        .and_then(|_| {
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))
+        })
+        .and_then(|_| std::fs::rename(&temp, &dest));
+    if let Err(err) = install {
+        let _ = std::fs::remove_file(&temp);
+        crate::log::line(format!("could not install {}: {err}", exe_name));
+    }
 }
 
 // ── Minimal unified diff (LCS) ────────────────────────────────────────────────
