@@ -1,4 +1,4 @@
-// Island window for Linux: Wayland layer-shell (primary) + X11 fallback.
+// Island window for Linux: X11 only (Wayland is not supported yet).
 // Transparent, borderless, always-on-top window at top-center of screen.
 
 use std::sync::atomic::{AtomicBool, Ordering};

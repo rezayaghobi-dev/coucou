@@ -21,6 +21,8 @@ Approve Claude Code permissions, watch your session work, drop a file, chat with
 
 ## Install
 
+Requires an X11 session (Wayland is not supported yet).
+
 Download the `.deb` (Debian, Ubuntu, Mint) or the AppImage from the
 [releases page](../../releases):
 
