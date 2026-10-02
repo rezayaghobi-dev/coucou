@@ -180,9 +180,31 @@ fn intern(x: &X11, name: &str) -> Option<u32> {
 fn island_window_id(x: &X11) -> Option<Window> {
     let pid_atom = intern(x, "_NET_WM_PID")?;
     let name_atom = intern(x, "_NET_WM_NAME")?;
-    let children = x.conn.query_tree(x.root).ok()?.reply().ok()?.children;
     let me = std::process::id();
-    for win in children {
+
+    // _NET_CLIENT_LIST is the EWMH list of top-level windows as the
+    // window manager sees them. Window managers (Muffin on Mint) wrap
+    // client windows in frames, so _NET_WM_PID sits on the inner
+    // window and the root's direct children are frames, not ours.
+    let listed = intern(x, "_NET_CLIENT_LIST").and_then(|atom| {
+        x.conn
+            .get_property(false, x.root, atom, AtomEnum::WINDOW, 0, 1024)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| reply.value32().map(|it| it.collect::<Vec<Window>>()))
+    });
+
+    // A window manager that does not provide _NET_CLIENT_LIST: scan
+    // the root's direct children, like before.
+    let candidates = listed.unwrap_or_else(|| {
+        x.conn
+            .query_tree(x.root)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.children)
+            .unwrap_or_default()
+    });
+    for win in candidates {
         let pid = x
             .conn
             .get_property(false, win, pid_atom, AtomEnum::CARDINAL, 0, 1)
