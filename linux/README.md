@@ -127,6 +127,10 @@ to work on the island's looks. It also serves `dev/upload-preview.html`, which
 replays the whole file-drop choreography on a loop — the one part of the UI that
 otherwise needs a real drag to see. Neither page ships in the app.
 
+`npm run tauri dev` is the fast edit loop, and `./target/release/coucou` runs
+without installing anything. To try the current tree installed,
+`scripts/dev-install.sh` packs the .deb and reinstalls it in one go.
+
 `npm run pack` leaves four files in `linux/release/`, the same names the release
 workflow publishes:
 
