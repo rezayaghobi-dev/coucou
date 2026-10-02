@@ -50,8 +50,11 @@ export const Bridge = {
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
-  /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
+  /** The ↗ button: opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
+
+  /** "Open terminal" → opens a terminal emulator in the session folder. */
+  openTerminal: (path: string | null) => call<boolean>("open_terminal", { path }),
 
   quit: () => call<void>("quit_app"),
 
@@ -91,6 +94,12 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
+  /**
+   * Models the custom endpoint advertises, fetched server-side. An empty key
+   * falls back to the stored one.
+   */
+  customModels: (baseUrl: string, apiKey: string) =>
+    callOrThrow<ModelInfo[]>("custom_models", { baseUrl, apiKey }),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -137,6 +146,11 @@ export interface HookPreview {
   settingsPath: string;
   /** Hand back to hooksApply so only the reviewed diff is ever written. */
   fingerprint: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
 }
 
 export interface OpenCodeStatus {

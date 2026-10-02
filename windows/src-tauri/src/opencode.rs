@@ -95,6 +95,32 @@ fn preview_for(existing: Option<String>, next: String) -> Result<OpenCodePreview
     })
 }
 
+/// Is OpenCode available? PATH first — but the app is launched from the
+/// desktop and does not source the shell's rc files, so the curl installer's
+/// location (`~/.opencode/bin`) and the other usual spots are checked too.
+/// A missed detection only ever produced a wrong warning; wrong warnings erode
+/// trust in the dot next to them.
+fn find_opencode() -> bool {
+    if crate::find_on_path("opencode").is_some() || crate::find_on_path("opencode2").is_some() {
+        return true;
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        for candidate in [
+            home.join(".opencode/bin/opencode"),
+            home.join(".local/bin/opencode"),
+            home.join(".bun/bin/opencode"),
+            home.join(".opencode/bin/opencode.exe"),
+            home.join(".local/bin/opencode.exe"),
+        ] {
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn status() -> OpenCodeStatus {
     let installed = match std::fs::read(plugin_path()) {
         Ok(bytes) => is_ours(&String::from_utf8_lossy(&bytes)),
@@ -103,8 +129,7 @@ pub fn status() -> OpenCodeStatus {
     OpenCodeStatus {
         installed,
         plugin_path: plugin_path().to_string_lossy().to_string(),
-        opencode_found: crate::find_on_path("opencode").is_some()
-            || crate::find_on_path("opencode2").is_some(),
+        opencode_found: find_opencode(),
     }
 }
 

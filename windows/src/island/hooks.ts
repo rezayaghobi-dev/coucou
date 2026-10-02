@@ -103,10 +103,11 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
+function upsert(projectName: string, cwd: string, payload: HookPayload) {
   const t = State.tasks.find((x) => x.id === CLAUDE_ID);
   if (!t) return;
   t.name = projectName;
+  t.agent = payload.agent ?? "claude";
   if (cwd) t.sessionCwd = cwd;
 }
 
@@ -116,6 +117,7 @@ function clearSession() {
   t.steps = [];
   t.stepIndex = 0;
   t.name = "VS Code";
+  t.agent = "claude";
   t.pillBadge = null;
 }
 
@@ -157,13 +159,13 @@ function handleHook(island: Island, payload: HookPayload) {
 
   switch (name) {
     case "SessionStart":
-      upsert(taskName, cwd);
+      upsert(taskName, cwd, payload);
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
-      upsert(taskName, cwd);
+      upsert(taskName, cwd, payload);
       State.updateTask(CLAUDE_ID, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
@@ -173,7 +175,7 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "PreToolUse": {
-      upsert(taskName, cwd);
+      upsert(taskName, cwd, payload);
       State.updateTask(CLAUDE_ID, "working");
       const tool = payload.tool_name ?? "Tool";
       State.appendStep(CLAUDE_ID, stepLabel(tool, payload.tool_input ?? {}));
@@ -244,7 +246,7 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(taskName, cwd);
+      upsert(taskName, cwd, payload);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};

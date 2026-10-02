@@ -14,6 +14,8 @@ export interface AgentTask {
   stepIndex: number;
   steps: string[];
   source: AgentSource;
+  /** Which agent last spoke: "claude" (default), "opencode"… */
+  agent?: string | null;
   isIntegration: boolean;
   emote?: BotEmoteName | null;
   miniEye?: EyeShape | null;
@@ -92,6 +94,12 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /** Which chat backend is active: Anthropic, or an OpenAI-compatible endpoint. */
+  provider: "anthropic" | "custom";
+  /** Base URL of the custom endpoint, e.g. https://host/v1. */
+  customBaseUrl: string;
+  /** Model id picked from the custom endpoint's /models list. */
+  customModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +114,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  provider: "anthropic",
+  customBaseUrl: "",
+  customModel: "",
 };
 
 type Listener = () => void;

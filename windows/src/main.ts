@@ -53,8 +53,17 @@ async function main() {
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
 
   // The settings window writes preferences; apply them here without a restart.
+  let lastProvider = State.settings.provider;
   await onEvent<Settings>("settings-changed", (s) => {
+    const providerChanged = s.provider !== lastProvider;
+    lastProvider = s.provider;
     State.settings = { ...State.settings, ...s };
+    if (providerChanged) {
+      // Anthropic block history and OpenAI message history cannot be mixed, so
+      // a provider switch starts a fresh conversation — clear the bubbles too.
+      State.chatHistory = [];
+      void Bridge.chatReset();
+    }
     island.applySettings();
     State.loadIntegrationTasks();
     void refreshConfigured();

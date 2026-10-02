@@ -16,13 +16,13 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Server-side fallback: on a policy decline the API retries the same request on
 /// a fallback model inside the same call, so the island never shows a dead end.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-const MAX_TOKENS: u32 = 4096;
+pub(crate) const MAX_TOKENS: u32 = 4096;
 /// Text and code files are inlined; anything larger is skipped, as on macOS.
-const MAX_INLINE_TEXT: u64 = 200_000;
+pub(crate) const MAX_INLINE_TEXT: u64 = 200_000;
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5";
 
-const SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. \
+pub(crate) const SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at the top of the user's screen. \
 You have web search access and can help with absolutely anything — research, coding, finding places, recommendations, tasks, questions. \
 Respond in the user's language. Be thorough and complete — use as much detail as the task requires. \
 No markdown formatting (no **, no ##, no bullet dashes). Use plain text with line breaks.";
@@ -31,26 +31,41 @@ No markdown formatting (no **, no ##, no bullet dashes). Use plain text with lin
 pub struct Chat {
     /// Full multi-turn history, including tool_use / tool_result blocks.
     messages: Mutex<Vec<Value>>,
+    /// Which backend the stored messages belong to. The two providers speak
+    /// different formats, so switching starts a fresh conversation rather than
+    /// sending Anthropic blocks to an OpenAI endpoint (or the reverse).
+    provider: Mutex<String>,
 }
 
 impl Chat {
     pub fn reset(&self) {
         self.messages.lock().unwrap().clear();
+        self.provider.lock().unwrap().clear();
     }
 
-    fn is_empty(&self) -> bool {
+    /// Called once per turn: clears the history when a different provider is
+    /// about to write to it.
+    pub(crate) fn begin_turn(&self, provider: &str) {
+        let mut current = self.provider.lock().unwrap();
+        if *current != provider {
+            self.messages.lock().unwrap().clear();
+            *current = provider.to_string();
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
         self.messages.lock().unwrap().is_empty()
     }
 
-    fn push(&self, message: Value) {
+    pub(crate) fn push(&self, message: Value) {
         self.messages.lock().unwrap().push(message);
     }
 
-    fn pop(&self) {
+    pub(crate) fn pop(&self) {
         self.messages.lock().unwrap().pop();
     }
 
-    fn snapshot(&self) -> Vec<Value> {
+    pub(crate) fn snapshot(&self) -> Vec<Value> {
         self.messages.lock().unwrap().clone()
     }
 }
@@ -76,6 +91,8 @@ pub async fn send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
+    chat.begin_turn("anthropic");
+
     let key = secrets::get("anthropic-api-key")
         .ok_or_else(|| "API key missing. Open settings.".to_string())?;
 

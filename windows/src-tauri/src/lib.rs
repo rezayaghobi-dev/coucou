@@ -5,6 +5,7 @@ mod files;
 mod hooks;
 mod integrations;
 mod log;
+mod openai;
 mod opencode;
 mod pipe;
 mod secrets;
@@ -37,6 +38,7 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
+use openai::ModelInfo;
 use opencode::{OpenCodePreview, OpenCodeStatus};
 #[cfg(target_os = "linux")]
 use linux_island::{PollGate, ScreenInfo};
@@ -183,7 +185,7 @@ fn open_url(url: String) {
     }
 }
 
-/// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
+/// The ↗ button: opens the working folder in VS Code when `code` is on PATH,
 /// and falls back to the system file manager otherwise.
 #[tauri::command]
 fn open_in_vscode(path: Option<String>) -> bool {
@@ -224,6 +226,82 @@ fn open_in_vscode(path: Option<String>) -> bool {
         }
     }
     false
+}
+
+/// "Open terminal" opens a real terminal emulator in the working folder — the
+/// same thing the Mac build does with Terminal.app. VS Code keeps the ↗ button.
+#[tauri::command]
+fn open_terminal(path: Option<String>) -> bool {
+    let dir = path.filter(|p| !p.is_empty());
+
+    #[cfg(target_os = "linux")]
+    {
+        // First one on PATH wins. `flag` is the emulator's own working-directory
+        // option; those without one inherit the parent's cwd, which every
+        // common terminal honours at launch.
+        const TERMINALS: &[(&str, Option<&str>)] = &[
+            ("x-terminal-emulator", None),
+            ("gnome-terminal", Some("--working-directory")),
+            ("konsole", Some("--workdir")),
+            ("xfce4-terminal", Some("--working-directory")),
+            ("kitty", Some("--directory")),
+            ("alacritty", Some("--working-directory")),
+            ("wezterm", None),
+            ("foot", None),
+            ("xterm", None),
+        ];
+        for (name, flag) in TERMINALS {
+            let Some(exe) = find_on_path(name) else { continue };
+            let mut cmd = Command::new(exe);
+            if let Some(d) = dir.as_deref() {
+                match flag {
+                    Some(flag) => {
+                        cmd.arg(format!("{flag}={d}"));
+                    }
+                    None => {
+                        cmd.current_dir(d);
+                    }
+                }
+            }
+            if cmd.spawn().is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // Windows Terminal first, then a plain console window.
+        if let Some(wt) = find_on_path("wt") {
+            let mut cmd = Command::new(wt);
+            if let Some(d) = dir.as_deref() {
+                cmd.arg("-d").arg(d);
+            }
+            if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
+                return true;
+            }
+        }
+        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
+        let mut cmd = Command::new(comspec);
+        cmd.args(["/C", "start", "", "cmd"]);
+        if let Some(d) = dir.as_deref() {
+            cmd.current_dir(d);
+        }
+        cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = Command::new("open");
+        cmd.args(["-a", "Terminal"]);
+        if let Some(d) = dir.as_deref() {
+            cmd.arg(d);
+        }
+        cmd.spawn().is_ok()
+    }
 }
 
 /// Cross-platform `which`: walks $PATH, checks executables.
@@ -347,7 +425,8 @@ fn approval_decline(app: AppHandle, request_id: String) {
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
-/// One chat turn. The API key and any file bytes stay on the Rust side.
+/// One chat turn. The API key and any file bytes stay on the Rust side, and the
+/// provider is whichever one the settings window has active.
 #[tauri::command]
 async fn chat_send(
     shared: State<'_, Shared>,
@@ -355,8 +434,46 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let (provider, model, base_url, custom_model) = {
+        let s = shared.settings.lock().unwrap();
+        (
+            s.provider.clone(),
+            s.model.clone(),
+            s.custom_base_url.clone(),
+            s.custom_model.clone(),
+        )
+    };
+
+    if provider == "custom" {
+        if base_url.trim().is_empty() {
+            return Err("No custom endpoint configured. Open settings.".into());
+        }
+        if custom_model.trim().is_empty() {
+            return Err("No custom model selected. Open settings.".into());
+        }
+        openai::send(&chat, &base_url, &custom_model, query, context).await
+    } else {
+        claude::send(&chat, &model, query, context).await
+    }
+}
+
+/// Models the configured OpenAI-compatible endpoint advertises. Fetched here
+/// rather than in the webview so the key never leaves the Rust side. An empty
+/// `apiKey` falls back to the one already stored, so the settings window can
+/// load the list without the user re-typing it.
+#[tauri::command]
+async fn custom_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<Vec<ModelInfo>, String> {
+    if base_url.trim().is_empty() {
+        return Err("Enter an endpoint first.".into());
+    }
+    let key = api_key
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| secrets::get("custom-api-key"))
+        .ok_or_else(|| "Enter an API key first.".to_string())?;
+    openai::list_models(&base_url, &key).await
 }
 
 #[tauri::command]
@@ -496,6 +613,7 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            open_terminal,
             quit_app,
             hooks_status,
             hooks_preview,
@@ -509,6 +627,7 @@ pub fn run() {
             log_line,
             chat_send,
             chat_reset,
+            custom_models,
             ingest_file,
             secret_present,
             secret_set,

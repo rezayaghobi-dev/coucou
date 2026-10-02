@@ -113,7 +113,7 @@ export class Island {
       },
       openTerminal: () => {
         const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
+        void Bridge.openTerminal(cwd);
       },
       // The ↗ button — same targets as openAgentTarget() on macOS.
       openTarget: () => {
