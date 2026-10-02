@@ -279,15 +279,14 @@ fn cursor_physical() -> Option<(f64, f64)> {
     Some((reply.root_x as f64, reply.root_y as f64))
 }
 
-/// True while the left mouse button is held.
-fn left_button_down() -> bool {
-    let Some(x) = x11() else { return false };
-    x.conn
-        .query_pointer(x.root)
-        .ok()
-        .and_then(|cookie| cookie.reply().ok())
-        .map(|reply| u16::from(reply.mask) & u16::from(KeyButMask::BUTTON1) != 0)
-        .unwrap_or(false)
+/// Cursor position in physical screen coordinates (X11 root
+/// coordinates) plus whether the left button is held — one
+/// query_pointer serves both the cursor and the drag detection.
+fn pointer_state() -> Option<(f64, f64, bool)> {
+    let x = x11()?;
+    let reply = x.conn.query_pointer(x.root).ok()?.reply().ok()?;
+    let down = u16::from(reply.mask) & u16::from(KeyButMask::BUTTON1) != 0;
+    Some((reply.root_x as f64, reply.root_y as f64, down))
 }
 
 fn monitor_contains(m: &Monitor, x: f64, y: f64) -> bool {
@@ -404,7 +403,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 let Some(win) = window(&app) else { continue };
                 let Ok(origin) = win.outer_position() else { continue };
                 let scale = win.scale_factor().unwrap_or(1.0);
-                let Some((cx, cy)) = cursor_physical() else { continue };
+                let Some((cx, cy, down)) = pointer_state() else { continue };
                 let x = (cx - origin.x as f64) / scale;
                 let y = (cy - origin.y as f64) / scale;
                 let size = match win.inner_size() {
@@ -426,8 +425,6 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
 
                 // A held button means a drag may be starting: keep the panel taking
                 // the mouse so the drop still reaches the webview.
-                let down = left_button_down();
-
                 let dragging = down
                     && x >= 0.0
                     && x <= size.0
