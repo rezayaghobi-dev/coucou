@@ -69,16 +69,6 @@ function agentWho(task: AgentTask | null, label: string): HTMLElement {
   return row;
 }
 
-/** How the agent is named in the island's prose — "Claude Code", "OpenCode", "n8n". */
-function agentLabel(task: AgentTask | null): string {
-  if (!task) return "Claude Code";
-  if (task.source === "n8n") return "n8n";
-  const agent = (task.agent ?? "claude").toLowerCase();
-  if (agent === "claude") return "Claude Code";
-  if (agent === "opencode") return "OpenCode";
-  return agent.charAt(0).toUpperCase() + agent.slice(1);
-}
-
 function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
   const el = h("div", { class: "stack" }, ...children);
   el.style.padding = `4px ${padRight}px 4px ${padLeft}px`;
@@ -338,7 +328,7 @@ function buildQuestion(): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, `${agentLabel(State.focusTask)} is asking a question`));
+      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
       const task = State.focusTask;
       title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
       clear(row);
@@ -363,7 +353,7 @@ function buildError(actions: ViewActions): ViewHost {
     sync() {
       const task = State.focusTask;
       clear(who);
-      who.append(agentWho(task, agentLabel(task)));
+      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
     },
@@ -384,7 +374,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, `${agentLabel(State.focusTask)} finished`));
+      who.append(agentWho(State.focusTask, "Claude Code finished"));
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };

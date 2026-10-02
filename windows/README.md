@@ -68,37 +68,11 @@ in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
-## OpenCode
-
-Coucou also speaks to [OpenCode](https://opencode.ai), through a plugin instead
-of hooks: **Settings… → OpenCode → Install plugin…**. Same care as the hooks —
-you see the exact file that will be written, a dated backup is taken, and
-nothing is written until you click. The plugin lands in
-`~/.config/opencode/plugins/` and works in every project; uninstalling removes
-only Coucou's file. Restart OpenCode after installing.
-
-The plugin talks to the island over the same socket protocol as `coucou-hook`,
-and follows the same hard rule — Coucou closed, paused or slow means OpenCode
-asks in the terminal, and nothing ever blocks a session.
-
-| OpenCode | What you get |
-|---|---|
-| **v1.x (verified on 1.18.34)** | Sessions, prompts, tool steps and completion in the island. Permission approval stays in the terminal — v1 has no plugin permission API (its `permission.ask` hook is defined but never triggered). |
-| **v2.x** | Everything above **plus Allow / Deny from the island**, via `permission.evaluate`. |
-
 ## Chat and keys
 
-**Settings… → Chat** picks the provider. **Anthropic** takes an Anthropic API
-key and model. **Custom** takes any OpenAI-compatible endpoint (a base URL like
-`https://host/v1`) and its API key, then **Load models** reads `GET {endpoint}/models`
-so you can pick one. Only one provider is active at a time, and switching starts
-a fresh conversation.
-
-Keys live in the OS credential manager (Windows Credential Manager / the
-Linux keyring), never on disk and never in the interface — the island can only
-ask whether a key exists. The custom endpoint URL is not a secret, so it is
-stored with the other preferences in `settings.json`. Same for every
-integration key.
+**Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
+Credential Manager**, never on disk and never in the interface — the island can
+only ask whether a key exists. Same for every integration key.
 
 No telemetry. The only network requests Coucou makes are to the services you
 configure yourself.
@@ -168,8 +142,7 @@ problems. It stays on your machine.
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Not in this version: sending a file by email, and dragging Mochi onto a window
-  to attach it as context.
-- "Open terminal" opens a terminal emulator in the session's working folder;
-  the ↗ button opens that folder in VS Code when `code` is on your `PATH`.
+- Not in this version: sending a file by email, dragging Mochi onto a window to
+  attach it as context, and jumping to a specific terminal window — "Open
+  terminal" opens the working folder in VS Code when `code` is on your `PATH`.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.

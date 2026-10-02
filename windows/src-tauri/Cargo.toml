@@ -1,6 +1,6 @@
 [package]
 name = "coucou"
-description = "Coucou — Mochi lives at the top of your screen"
+description = "Coucou for Windows — Mochi lives at the top of your screen"
 authors = ["Louis Raille"]
 version.workspace = true
 edition.workspace = true
@@ -21,15 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# Linux: the freedesktop Secret Service (gnome-keyring on Mint). `crypto-rust`
-# keeps the crypto backend pure-Rust so no libssl/openssl-sys is needed.
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
-dirs = "5"
-opener = "0.7"
-# Cross-platform local time (localtime_r) for log stamps and hook backups.
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
@@ -40,9 +32,3 @@ windows = { version = "0.61", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
-keyring = { version = "3", features = ["windows-native"] }
-
-# X11 cursor polling, window properties and click-through. The Wayland path is
-# not implemented yet — see linux_island.rs — so no Wayland crates are pulled in.
-[target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["randr"] }

@@ -1,32 +1,18 @@
-// Coucou — app wiring and the commands the island calls.
+// Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
 mod files;
 mod hooks;
 mod integrations;
+mod island;
 mod log;
-mod openai;
-mod opencode;
 mod pipe;
 mod secrets;
 mod settings;
-mod time;
 mod tray;
-
-/// The label every window event is addressed to. Shared here so the
-/// cross-platform modules (tray, pipe, integrations) do not depend on which
-/// window module — Windows `island` or Linux `linux_island` — is compiled in.
-pub const WINDOW_LABEL: &str = "island";
-
-#[cfg(target_os = "linux")]
-mod linux_island;
-#[cfg(target_os = "linux")]
-mod linux_user;
-#[cfg(target_os = "windows")]
-mod island;
-#[cfg(target_os = "windows")]
 mod win_user;
 
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -38,14 +24,12 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
-use openai::ModelInfo;
-use opencode::{OpenCodePreview, OpenCodeStatus};
-#[cfg(target_os = "linux")]
-use linux_island::{PollGate, ScreenInfo};
-#[cfg(target_os = "windows")]
-use island::{PollGate, ScreenInfo, make_non_activating, apply_geometry, spawn_cursor_poll, set_ignore_cursor, window};
+use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use settings::Settings;
+
+/// Keeps spawned helpers from flashing a console window.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Shared {
     pub settings: Mutex<Settings>,
@@ -64,13 +48,9 @@ pub struct BootInfo {
 #[tauri::command]
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
     let mut settings = shared.settings.lock().unwrap().clone();
+    // The real state of ~/.claude/settings.json wins over whatever we stored.
     settings.hooks_installed = hooks::status().installed;
-    let screen = {
-        #[cfg(target_os = "linux")]
-        { linux_island::screen_info(&app, &settings.screen) }
-        #[cfg(target_os = "windows")]
-        { island::screen_info(&app, &settings.screen) }
-    };
+    let screen = island::screen_info(&app, &settings.screen);
     BootInfo {
         settings,
         screen,
@@ -100,11 +80,9 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        #[cfg(target_os = "linux")]
-        linux_island::apply_geometry(&app, &settings.screen, collapsed);
-        #[cfg(target_os = "windows")]
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
+    // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
 }
 
@@ -114,13 +92,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    #[cfg(target_os = "linux")]
-    linux_island::apply_geometry(&app, &pref, collapsed);
-    #[cfg(target_os = "windows")]
     island::apply_geometry(&app, &pref, collapsed);
-    #[cfg(target_os = "linux")]
-    linux_island::set_ignore_cursor(&app, false);
-    #[cfg(target_os = "windows")]
+    // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
     shared.gate.set_active(!collapsed);
@@ -129,28 +102,15 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
 /// The front end pushes the island shape; Rust decides click-through from it.
 #[tauri::command]
 fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
-    shared.gate.set_rect({
-        #[cfg(target_os = "linux")]
-        { linux_island::IslandRect { x, y, w: width, h: height } }
-        #[cfg(target_os = "windows")]
-        { island::IslandRect { x, y, w: width, h: height } }
-    });
+    shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
 }
 
 #[tauri::command]
 fn focus_window(app: AppHandle, focused: bool) {
-    #[cfg(target_os = "windows")]
-    {
-        let Some(win) = island::window(&app) else { return };
-        island::set_activating(&win, focused);
-        if focused {
-            let _ = win.set_focus();
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let Some(win) = linux_island::window(&app) else { return };
-        linux_island::set_activating(&win, focused);
+    let Some(win) = island::window(&app) else { return };
+    island::set_activating(&win, focused);
+    if focused {
+        let _ = win.set_focus();
     }
 }
 
@@ -158,9 +118,6 @@ fn focus_window(app: AppHandle, focused: bool) {
 fn reposition(app: AppHandle, shared: State<Shared>) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    #[cfg(target_os = "linux")]
-    linux_island::apply_geometry(&app, &pref, collapsed);
-    #[cfg(target_os = "windows")]
     island::apply_geometry(&app, &pref, collapsed);
 }
 
@@ -169,169 +126,46 @@ fn open_url(url: String) {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return;
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &url])
-            .spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = opener::open(url);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("open").arg(url).spawn();
-    }
+    let _ = Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
 }
 
-/// The ↗ button: opens the working folder in VS Code when `code` is on PATH,
-/// and falls back to the system file manager otherwise.
+/// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
+/// and falls back to Explorer otherwise.
 #[tauri::command]
 fn open_in_vscode(path: Option<String>) -> bool {
-    // Find `code` on PATH (works on Windows, Linux, macOS)
+    // No `cmd /C` anywhere near this. The path is a project folder chosen by
+    // whoever is using Claude Code, and cmd would happily read `&`, `^` and `%`
+    // in a folder name as syntax. Finding the launcher ourselves and handing the
+    // path over as a separate argument keeps it a path.
     if let Some(code) = find_on_path("code") {
         let mut cmd = Command::new(code);
         if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
             cmd.arg(p);
         }
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
-                return true;
-            }
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            if cmd.spawn().is_ok() {
-                return true;
-            }
+        if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
+            return true;
         }
     }
-    // Fallback: system file manager
     if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = Command::new("explorer").arg(p).spawn();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = opener::open(p);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = Command::new("open").arg(p).spawn();
-        }
+        let _ = Command::new("explorer").arg(p).spawn();
     }
     false
 }
 
-/// "Open terminal" opens a real terminal emulator in the working folder — the
-/// same thing the Mac build does with Terminal.app. VS Code keeps the ↗ button.
-#[tauri::command]
-fn open_terminal(path: Option<String>) -> bool {
-    let dir = path.filter(|p| !p.is_empty());
-
-    #[cfg(target_os = "linux")]
-    {
-        // First one on PATH wins. `flag` is the emulator's own working-directory
-        // option; those without one inherit the parent's cwd, which every
-        // common terminal honours at launch.
-        const TERMINALS: &[(&str, Option<&str>)] = &[
-            ("x-terminal-emulator", None),
-            ("gnome-terminal", Some("--working-directory")),
-            ("konsole", Some("--workdir")),
-            ("xfce4-terminal", Some("--working-directory")),
-            ("kitty", Some("--directory")),
-            ("alacritty", Some("--working-directory")),
-            ("wezterm", None),
-            ("foot", None),
-            ("xterm", None),
-        ];
-        for (name, flag) in TERMINALS {
-            let Some(exe) = find_on_path(name) else { continue };
-            let mut cmd = Command::new(exe);
-            if let Some(d) = dir.as_deref() {
-                match flag {
-                    Some(flag) => {
-                        cmd.arg(format!("{flag}={d}"));
-                    }
-                    None => {
-                        cmd.current_dir(d);
-                    }
-                }
-            }
-            if cmd.spawn().is_ok() {
-                return true;
-            }
-        }
-        false
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        // Windows Terminal first, then a plain console window.
-        if let Some(wt) = find_on_path("wt") {
-            let mut cmd = Command::new(wt);
-            if let Some(d) = dir.as_deref() {
-                cmd.arg("-d").arg(d);
-            }
-            if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
-                return true;
-            }
-        }
-        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
-        let mut cmd = Command::new(comspec);
-        cmd.args(["/C", "start", "", "cmd"]);
-        if let Some(d) = dir.as_deref() {
-            cmd.current_dir(d);
-        }
-        cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let mut cmd = Command::new("open");
-        cmd.args(["-a", "Terminal"]);
-        if let Some(d) = dir.as_deref() {
-            cmd.arg(d);
-        }
-        cmd.spawn().is_ok()
-    }
-}
-
-/// Cross-platform `which`: walks $PATH, checks executables.
-pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(stem);
-        if candidate.is_file() {
-            // Check executable bit on Unix
-            #[cfg(not(target_os = "windows"))]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(metadata) = candidate.metadata() {
-                    let mode = metadata.permissions().mode();
-                    if mode & 0o111 == 0 {
-                        continue; // not executable
-                    }
-                }
-            }
-            return Some(candidate);
-        }
-        // Windows: also try with extensions
-        #[cfg(target_os = "windows")]
-        {
-            let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-            for ext in exts.split(';').filter(|e| !e.is_empty()) {
-                let candidate = dir.join(format!("{stem}{}", ext.to_lowercase()));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
+/// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
+/// Rust quotes arguments correctly for `.cmd`/`.bat` targets since 1.77, so
+/// spawning `code.cmd` directly is safe.
+fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let dirs = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&dirs) {
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            let candidate = dir.join(format!("{stem}{}", ext.to_lowercase()));
+            if candidate.is_file() {
+                return Some(candidate);
             }
         }
     }
@@ -389,25 +223,6 @@ fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
 }
 
-// ── OpenCode plugin ───────────────────────────────────────────────────────────
-
-#[tauri::command]
-fn opencode_status() -> OpenCodeStatus {
-    opencode::status()
-}
-
-/// Returns the diff the user has to look at before anything is written.
-#[tauri::command]
-fn opencode_preview(install: bool) -> Result<OpenCodePreview, String> {
-    opencode::preview(install)
-}
-
-/// Only ever called from an explicit click in the settings window.
-#[tauri::command]
-fn opencode_apply(install: bool, fingerprint: String) -> Result<String, String> {
-    opencode::write(install, &fingerprint)
-}
-
 /// The island has the card on screen, so the long wait for a human may begin.
 /// Until this arrives the relay only waits a few hundred milliseconds, which is
 /// what stops a paused or unresponsive island from freezing Claude Code.
@@ -425,8 +240,7 @@ fn approval_decline(app: AppHandle, request_id: String) {
 
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
-/// One chat turn. The API key and any file bytes stay on the Rust side, and the
-/// provider is whichever one the settings window has active.
+/// One chat turn. The API key and any file bytes stay on the Rust side.
 #[tauri::command]
 async fn chat_send(
     shared: State<'_, Shared>,
@@ -434,46 +248,8 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let (provider, model, base_url, custom_model) = {
-        let s = shared.settings.lock().unwrap();
-        (
-            s.provider.clone(),
-            s.model.clone(),
-            s.custom_base_url.clone(),
-            s.custom_model.clone(),
-        )
-    };
-
-    if provider == "custom" {
-        if base_url.trim().is_empty() {
-            return Err("No custom endpoint configured. Open settings.".into());
-        }
-        if custom_model.trim().is_empty() {
-            return Err("No custom model selected. Open settings.".into());
-        }
-        openai::send(&chat, &base_url, &custom_model, query, context).await
-    } else {
-        claude::send(&chat, &model, query, context).await
-    }
-}
-
-/// Models the configured OpenAI-compatible endpoint advertises. Fetched here
-/// rather than in the webview so the key never leaves the Rust side. An empty
-/// `apiKey` falls back to the one already stored, so the settings window can
-/// load the list without the user re-typing it.
-#[tauri::command]
-async fn custom_models(
-    base_url: String,
-    api_key: Option<String>,
-) -> Result<Vec<ModelInfo>, String> {
-    if base_url.trim().is_empty() {
-        return Err("Enter an endpoint first.".into());
-    }
-    let key = api_key
-        .filter(|k| !k.trim().is_empty())
-        .or_else(|| secrets::get("custom-api-key"))
-        .ok_or_else(|| "Enter an API key first.".to_string())?;
-    openai::list_models(&base_url, &key).await
+    let model = shared.settings.lock().unwrap().model.clone();
+    claude::send(&chat, &model, query, context).await
 }
 
 #[tauri::command]
@@ -595,7 +371,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            let _ = app.emit_to(WINDOW_LABEL, "tray", "open".to_string());
+            let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(Shared {
@@ -613,7 +389,6 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
-            open_terminal,
             quit_app,
             hooks_status,
             hooks_preview,
@@ -621,13 +396,9 @@ pub fn run() {
             approval_decision,
             approval_ack,
             approval_decline,
-            opencode_status,
-            opencode_preview,
-            opencode_apply,
             log_line,
             chat_send,
             chat_reset,
-            custom_models,
             ingest_file,
             secret_present,
             secret_set,
@@ -640,30 +411,17 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
+            // Before the island: see create_settings_window.
             create_settings_window(&handle);
 
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(win) = linux_island::window(&handle) {
-                    linux_island::setup_platform_window(&handle);
-                    linux_island::apply_geometry(&handle, &loaded.screen, false);
-                    let _ = win.show();
-                }
-                gate.collapsed.store(false, Ordering::Relaxed);
-                gate.set_active(true);
-                linux_island::spawn_cursor_poll(handle.clone(), gate.clone());
+            if let Some(win) = island::window(&handle) {
+                island::make_non_activating(&win);
+                island::apply_geometry(&handle, &loaded.screen, false);
+                let _ = win.show();
             }
-            #[cfg(target_os = "windows")]
-            {
-                if let Some(win) = island::window(&handle) {
-                    island::make_non_activating(&win);
-                    island::apply_geometry(&handle, &loaded.screen, false);
-                    let _ = win.show();
-                }
-                gate.collapsed.store(false, Ordering::Relaxed);
-                gate.set_active(true);
-                island::spawn_cursor_poll(handle.clone(), gate.clone());
-            }
+            gate.collapsed.store(false, Ordering::Relaxed);
+            gate.set_active(true);
+            island::spawn_cursor_poll(handle.clone(), gate.clone());
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);

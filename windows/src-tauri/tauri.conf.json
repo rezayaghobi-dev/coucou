@@ -41,29 +41,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["appimage", "deb"],
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": {
-      "../target/release/coucou-hook": "coucou-hook"
-    },
+    "resources": { "../target/release/coucou-hook.exe": "coucou-hook.exe" },
     "copyright": "© Louis Raille",
     "category": "DeveloperTool",
     "shortDescription": "Mochi lives at the top of your screen",
     "longDescription": "Coucou puts Mochi at the top of your screen: it shows your Claude Code sessions and a few integrations, and lets you approve, answer, chat and drop files without leaving what you are doing.",
-    "linux": {
-      "deb": {
-        "depends": [
-          "libayatana-appindicator3-1",
-          "libwebkit2gtk-4.1-0",
-          "libsecret-1-0",
-          "libgtk-3-0",
-          "librsvg2-2"
-        ]
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "French"],
+        "installerHooks": "nsis/hooks.nsh"
       }
     }
   }

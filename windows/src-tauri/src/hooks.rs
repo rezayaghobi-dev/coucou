@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
+use windows::Win32::System::SystemInformation::GetLocalTime;
 
 use crate::settings;
-use crate::time;
 
 /// Every event the island reacts to, with the hook timeout written to settings.json.
 /// PermissionRequest waits for a human, so it gets the decision timeout + 10 s.
@@ -59,13 +59,8 @@ pub struct HookPreview {
 }
 
 fn home() -> PathBuf {
-    // HOME on Unix, USERPROFILE on Windows; dirs::home_dir() as a fallback for
-    // either. Never guess "." when we can avoid it — that would install hooks
-    // into the current working directory.
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
+    std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
-        .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -199,16 +194,24 @@ fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
+/// Down to the second: installing then uninstalling in the same minute must not
+/// quietly overwrite the first backup.
+fn stamp() -> String {
+    let t = unsafe { GetLocalTime() };
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+    )
+}
+
 fn backup_path() -> PathBuf {
-    // Down to the second: installing then uninstalling in the same minute must
-    // not quietly overwrite the first backup.
     let p = settings_path();
-    p.with_file_name(format!("settings.json.bak-{}", time::backup_stamp()))
+    p.with_file_name(format!("settings.json.bak-{}", stamp()))
 }
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
 /// the question is only "is this still the file I showed the user?".
-pub(crate) fn fingerprint(bytes: &[u8]) -> String {
+fn fingerprint(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         hash ^= *b as u64;
@@ -300,9 +303,15 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
     Ok(backup.to_string_lossy().to_string())
 }
 
-/// Copies coucou-hook (or coucou-hook.exe on Windows) into the local bin dir on launch.
+/// Copies coucou-hook.exe into %LOCALAPPDATA%\Coucou\bin on launch.
 /// In a bundled install it comes from the app resources; in `tauri dev` it sits
 /// next to coucou.exe in the workspace target directory.
+///
+/// Every candidate is tried rather than just the first, because getting this
+/// wrong is silent and fatal: `resources` used to be a glob, which made NSIS
+/// mirror the source path into `_up_\target\release\`, no candidate matched, and
+/// the relay was simply never installed. It only looked healthy on a developer
+/// machine, where a leftover copy from `tauri dev` was already sitting in bin/.
 pub fn ensure_hook_exe(app: &AppHandle) {
     let dest = settings::hook_exe_path();
     let Some(dir) = dest.parent() else { return };
@@ -310,24 +319,25 @@ pub fn ensure_hook_exe(app: &AppHandle) {
         return;
     }
 
-    let exe_name = if cfg!(target_os = "windows") { "coucou-hook.exe" } else { "coucou-hook" };
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = app.path().resolve(exe_name, tauri::path::BaseDirectory::Resource) {
+    if let Ok(p) = app.path().resolve("coucou-hook.exe", tauri::path::BaseDirectory::Resource) {
         candidates.push(p);
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            candidates.push(parent.join(exe_name));
-            candidates.push(parent.join("../release").join(exe_name));
-            candidates.push(parent.join("_up_/target/release").join(exe_name));
+            // Installed build, then `tauri dev` (target/debug) next to the
+            // release hook the pre-build step produces.
+            candidates.push(parent.join("coucou-hook.exe"));
+            candidates.push(parent.join("../release/coucou-hook.exe"));
+            // Belt and braces: where the old glob form used to land it.
+            candidates.push(parent.join("_up_/target/release/coucou-hook.exe"));
         }
     }
 
     let tried: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
     let Some(src) = candidates.into_iter().find(|p| p.exists()) else {
         crate::log::line(format!(
-            "{} not found — Claude Code hooks cannot work. Looked in: {}",
-            exe_name,
+            "coucou-hook.exe not found — Claude Code hooks cannot work. Looked in: {}",
             tried.join(", ")
         ));
         return;
@@ -340,24 +350,19 @@ pub fn ensure_hook_exe(app: &AppHandle) {
     if same {
         return;
     }
+    // A hook may be running right now and hold the file open; keeping the old
+    // copy is fine, it is the same relay.
     if let Err(err) = std::fs::copy(&src, &dest) {
         if !dest.exists() {
-            crate::log::line(format!("could not install {}: {err}", exe_name));
+            crate::log::line(format!("could not install coucou-hook.exe: {err}"));
         }
-    }
-    // Make executable on Unix
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
     }
 }
 
 // ── Minimal unified diff (LCS) ────────────────────────────────────────────────
 
 /// settings.json is short, so a plain O(n·m) LCS is the simplest honest diff.
-/// Shared with the OpenCode installer, which previews a one-file diff.
-pub(crate) fn unified_diff(before: &str, after: &str) -> String {
+fn unified_diff(before: &str, after: &str) -> String {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();
     let (n, m) = (a.len(), b.len());
@@ -429,12 +434,6 @@ pub(crate) fn unified_diff(before: &str, after: &str) -> String {
     }
     result
 }
-
-/// Serializes the two filesystem tests (hooks and opencode) that point
-/// HOME/USERPROFILE at a temp directory — that is process-wide state, and the
-/// tests run in parallel threads of one process.
-#[cfg(test)]
-pub(crate) static FS_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -513,14 +512,12 @@ mod tests {
     }
 
     /// Everything filesystem-shaped lives in one test on purpose: it points
-    /// HOME/USERPROFILE at a temp directory, and that is process-wide.
+    /// USERPROFILE at a temp directory, and that is process-wide.
     #[test]
     fn writing_backs_up_preserves_and_refuses_a_changed_file() {
-        let _guard = FS_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();
-        std::env::set_var("HOME", &tmp);
         std::env::set_var("USERPROFILE", &tmp);
 
         let path = settings_path();

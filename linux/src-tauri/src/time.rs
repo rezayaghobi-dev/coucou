@@ -1,7 +1,6 @@
-// Local wall-clock time, cross-platform. Used for log stamps and dated backups.
+// Local wall-clock time, used for log stamps and dated backups.
 //
-// The Windows build used GetLocalTime; on Linux we use libc's localtime_r. Both
-// are cheap and dependency-light, and neither needs a timezone crate.
+// libc's localtime_r is cheap and dependency-light, and needs no timezone crate.
 
 #[derive(Clone, Copy)]
 pub struct LocalTime {
@@ -13,21 +12,6 @@ pub struct LocalTime {
     pub second: u32,
 }
 
-#[cfg(windows)]
-pub fn local_time() -> LocalTime {
-    use windows::Win32::System::SystemInformation::GetLocalTime;
-    let t = unsafe { GetLocalTime() };
-    LocalTime {
-        year: t.wYear as i32,
-        month: t.wMonth as u32,
-        day: t.wDay as u32,
-        hour: t.wHour as u32,
-        minute: t.wMinute as u32,
-        second: t.wSecond as u32,
-    }
-}
-
-#[cfg(unix)]
 pub fn local_time() -> LocalTime {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

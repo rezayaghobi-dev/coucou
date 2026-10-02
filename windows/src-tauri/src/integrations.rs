@@ -16,9 +16,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::island::WINDOW_LABEL;
 use crate::log;
 use crate::secrets;
-use crate::WINDOW_LABEL;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 

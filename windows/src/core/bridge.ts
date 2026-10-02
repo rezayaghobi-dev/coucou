@@ -50,11 +50,8 @@ export const Bridge = {
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
-  /** The ↗ button: opens the folder in VS Code when `code` is on PATH. */
+  /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
-
-  /** "Open terminal" → opens a terminal emulator in the session folder. */
-  openTerminal: (path: string | null) => call<boolean>("open_terminal", { path }),
 
   quit: () => call<void>("quit_app"),
 
@@ -81,25 +78,11 @@ export const Bridge = {
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
 
-  // ── OpenCode plugin ───────────────────────────────────────────────────────
-  opencodeStatus: () => call<OpenCodeStatus>("opencode_status"),
-  /** Diff to show before anything is written. `install: false` previews removal. */
-  opencodePreview: (install: boolean) => callOrThrow<OpenCodePreview>("opencode_preview", { install }),
-  /** Writes the plugin file — only after an explicit click, only the reviewed bytes. */
-  opencodeApply: (install: boolean, fingerprint: string) =>
-    callOrThrow<string>("opencode_apply", { install, fingerprint }),
-
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
-  /**
-   * Models the custom endpoint advertises, fetched server-side. An empty key
-   * falls back to the stored one.
-   */
-  customModels: (baseUrl: string, apiKey: string) =>
-    callOrThrow<ModelInfo[]>("custom_models", { baseUrl, apiKey }),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -145,25 +128,6 @@ export interface HookPreview {
   backup: string;
   settingsPath: string;
   /** Hand back to hooksApply so only the reviewed diff is ever written. */
-  fingerprint: string;
-}
-
-export interface ModelInfo {
-  id: string;
-  name: string;
-}
-
-export interface OpenCodeStatus {
-  installed: boolean;
-  pluginPath: string;
-  opencodeFound: boolean;
-}
-
-export interface OpenCodePreview {
-  diff: string;
-  backup: string;
-  pluginPath: string;
-  /** Hand back to opencodeApply so only the reviewed bytes are ever written. */
   fingerprint: string;
 }
 

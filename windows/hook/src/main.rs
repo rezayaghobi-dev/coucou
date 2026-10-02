@@ -1,13 +1,14 @@
 //! coucou-hook — the relay Claude Code runs on every hook event.
 //!
 //! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Coucou over a named pipe (Windows) or Unix domain socket (Linux/macOS).
+//! Coucou over the named pipe `\\.\pipe\coucou-<sid>`.
 //!
 //! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
-//! * If the socket/pipe does not exist — Coucou is closed — we exit 0 immediately with
+//! * If the pipe does not exist — Coucou is closed — we exit 0 immediately with
 //!   nothing on stdout, and the session carries on untouched.
-//! * Every step runs under a deadline enforced by the main thread, so a connection that
-//!   accepts and then stops reading cannot wedge the session either.
+//! * Every step runs under a deadline enforced by the main thread, so a pipe that
+//!   accepts the connection and then stops reading cannot wedge the session
+//!   either: we abandon the worker and exit.
 //! * Only `PermissionRequest` waits for an answer, because approving from the
 //!   island is the whole point. No answer means empty stdout, and Claude Code
 //!   asks in the terminal exactly as if Coucou were not installed.
@@ -18,24 +19,57 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Budget for getting a connection. Beyond this Claude Code wins, always.
+/// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 /// Whole-run budget for an event nobody waits on: connect and write, no more.
 const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// How long a permission prompt may stay on screen before the terminal takes over.
 const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
-/// Fields that are pointless to forward and can be enormous.
+/// `ERROR_PIPE_BUSY` — every instance is serving someone else right now. This is
+/// the one error worth retrying: the server exists and a slot will free up.
+const ERROR_PIPE_BUSY: i32 = 231;
+
+/// Fields that are pointless to forward and can be enormous (a whole file read,
+/// a full command output). The island never shows them.
 const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
-/// Longest string forwarded for any single field.
+/// Longest string forwarded for any single field; the island truncates to far
+/// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
-#[cfg(target_os = "windows")]
 mod win;
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
+
+/// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
+/// ever meeting on the same pipe; the name falls back to the user name only if
+/// the SID cannot be read at all, which should not happen.
+fn pipe_path() -> String {
+    let key = win::current_user_sid()
+        .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
+    format!(r"\\.\pipe\coucou-{key}")
+}
+
+/// Opens the pipe. Retries only while the server is busy: any other error means
+/// there is nothing to talk to, and waiting would only delay Claude Code.
+fn connect() -> Option<std::fs::File> {
+    use std::os::windows::io::AsRawHandle;
+    let path = pipe_path();
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => {
+                let handle = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
+                // Somebody else's server on our pipe name gets nothing from us.
+                return win::pipe_server_is_same_user(handle).then_some(file);
+            }
+            Err(err) => {
+                if err.raw_os_error() != Some(ERROR_PIPE_BUSY) || Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        }
+    }
+}
 
 fn main() {
     let Some((payload, event)) = read_event() else { std::process::exit(0) };
@@ -43,6 +77,10 @@ fn main() {
     let waits_for_answer = event == "PermissionRequest";
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
 
+    // The worker owns every blocking call. If it overruns the budget we simply
+    // stop listening and exit: the process dying takes the pipe handle with it.
+    // (No catch_unwind here — the release profile is panic = "abort", so it would
+    // be dead code. `talk` is written to have nothing to panic on instead.)
     let (tx, rx) = mpsc::channel::<Option<String>>();
     std::thread::spawn(move || {
         let _ = tx.send(talk(&payload, waits_for_answer));
@@ -55,12 +93,17 @@ fn main() {
             let _ = out.flush();
         }
     }
+    // Nothing printed: Claude Code asks in the terminal, as if we were not here.
     std::process::exit(0);
 }
 
-/// The documented PermissionRequest output.
+/// The documented PermissionRequest output. Anything we do not recognise prints
+/// nothing at all rather than guessing — silence is the safe answer.
+/// See https://code.claude.com/docs/en/hooks
 fn decision_json(decision: &str) -> Option<String> {
     let behavior = match decision.trim() {
+        // "always" still answers a plain allow; remembering it is the island's
+        // business, not Claude Code's.
         "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
         "deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),
         _ => return None,
@@ -76,6 +119,7 @@ fn read_event() -> Option<(String, String)> {
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
     }
+    // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
     if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
         raw.drain(..3);
     }
@@ -83,6 +127,8 @@ fn read_event() -> Option<(String, String)> {
     let mut payload = serde_json::from_slice::<serde_json::Value>(&raw).ok()?;
     let map = payload.as_object_mut()?;
 
+    // The event name is passed as argv[1] by the hook command; the JSON usually
+    // carries it too. Trust argv when the JSON is missing it.
     let arg_event = std::env::args().nth(1).unwrap_or_default();
     let event = map
         .get("hook_event_name")
@@ -110,6 +156,8 @@ fn read_event() -> Option<(String, String)> {
         }
     }
 
+    // Which terminal the session runs in. Unlike macOS, Coucou on Windows accepts
+    // events from every terminal, so this is context only — never a filter.
     for (key, var) in [
         ("term_program", "TERM_PROGRAM"),
         ("wt_session", "WT_SESSION"),
@@ -123,12 +171,6 @@ fn read_event() -> Option<(String, String)> {
         }
     }
 
-    // Where the event came from, so the island can tell agents apart. The
-    // OpenCode plugin sends "opencode"; anything without the field is treated
-    // as Claude Code, as it always has been.
-    map.entry("agent")
-        .or_insert_with(|| serde_json::Value::String("claude".into()));
-
     truncate_strings(&mut payload);
 
     let mut line = payload.to_string();
@@ -136,17 +178,18 @@ fn read_event() -> Option<(String, String)> {
     Some((line, event))
 }
 
-/// Caps every string in the payload.
+/// Caps every string in the payload. A single Write can carry a whole file.
 fn truncate_strings(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(s) => {
             if s.len() > MAX_FIELD_LEN {
+                // Cut on a char boundary; a lone byte index can split UTF-8.
                 let mut end = MAX_FIELD_LEN;
                 while end > 0 && !s.is_char_boundary(end) {
                     end -= 1;
                 }
                 s.truncate(end);
-                s.push_str("...");
+                s.push('…');
             }
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(truncate_strings),
@@ -157,42 +200,7 @@ fn truncate_strings(value: &mut serde_json::Value) {
 
 /// Connect, send, and — for a permission request — wait for the island's word.
 fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        talk_windows(payload, waits_for_answer)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        talk_unix(payload, waits_for_answer, linux::socket_path())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        talk_unix(payload, waits_for_answer, macos::socket_path())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn talk_windows(payload: &str, waits_for_answer: bool) -> Option<String> {
-    use std::os::windows::io::AsRawHandle;
-    
-    let path = win::pipe_path();
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    let mut pipe = loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
-            Ok(file) => {
-                let handle = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
-                if win::pipe_server_is_same_user(handle) {
-                    break file;
-                }
-            }
-            Err(err) => {
-                if err.raw_os_error() != Some(231) || Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(15));
-            }
-        }
-    };
+    let mut pipe = connect()?;
 
     if pipe.write_all(payload.as_bytes()).is_err() {
         return None;
@@ -221,50 +229,6 @@ fn talk_windows(payload: &str, waits_for_answer: bool) -> Option<String> {
     (!answer.is_empty()).then_some(answer)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn talk_unix(payload: &str, waits_for_answer: bool, path: std::path::PathBuf) -> Option<String> {
-    use std::os::unix::net::UnixStream;
-    
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    let mut stream = loop {
-        match UnixStream::connect(&path) {
-            Ok(s) => break s,
-            Err(_) => {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(15));
-            }
-        }
-    };
-
-    if stream.write_all(payload.as_bytes()).is_err() {
-        return None;
-    }
-    let _ = stream.flush();
-
-    if !waits_for_answer {
-        return None;
-    }
-
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.contains(&b'\n') {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let answer = String::from_utf8_lossy(&buf).trim().to_string();
-    (!answer.is_empty()).then_some(answer)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +243,7 @@ mod tests {
             decision_json("deny").unwrap(),
             r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Coucou"}}}"#
         );
+        // "always" is an island concept; Claude Code just gets an allow.
         assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
     }
 
@@ -286,6 +251,7 @@ mod tests {
     fn anything_unrecognised_prints_nothing() {
         assert!(decision_json("").is_none());
         assert!(decision_json("maybe").is_none());
+        // The shape the app used to send must not be mistaken for a decision.
         assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
     }
 
@@ -295,6 +261,6 @@ mod tests {
         truncate_strings(&mut v);
         let s = v["tool_input"]["content"].as_str().unwrap();
         assert!(s.len() <= MAX_FIELD_LEN + 4);
-        assert!(s.ends_with("..."));
+        assert!(s.ends_with('…'));
     }
 }

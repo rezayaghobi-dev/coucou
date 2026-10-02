@@ -4,7 +4,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter};
 
-use crate::WINDOW_LABEL;
+use crate::island::WINDOW_LABEL;
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Coucou", true, None::<&str>)?;
@@ -30,11 +30,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon().cloned() {
         builder = builder.icon(icon);
     }
-    // The tray is the only way to reach Settings or Quit when the island is
-    // hidden, so a failure here is worth a line in the log.
-    if let Err(err) = builder.build(app) {
-        crate::log::line(format!("tray: build failed: {err}"));
-        return Err(err);
-    }
+
+    builder.build(app)?;
     Ok(())
 }

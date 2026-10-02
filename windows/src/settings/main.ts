@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus, type ModelInfo, type OpenCodeStatus } from "../core/bridge";
+import { Bridge, onEvent, type HookStatus } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -171,187 +171,17 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
-// ── OpenCode section ──────────────────────────────────────────────────────
+// ── Claude API section ────────────────────────────────────────────────────────
 
-function openCodeSection(status: OpenCodeStatus): HTMLElement {
-  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
-  const section = h(
-    "section",
-    {},
-    h("h2", {}, statusDot(status.installed), h("span", { text: "OpenCode" })),
-    body,
-  );
-
-  const rebuild = async () => {
-    const fresh = await Bridge.opencodeStatus();
-    if (fresh) Object.assign(status, fresh);
-    clear(body);
-    draw();
-    const head = section.querySelector("h2")!;
-    clear(head);
-    head.append(statusDot(status.installed), h("span", { text: "OpenCode" }));
-  };
-
-  function draw() {
-    body.append(
-      h("div", {
-        class: "hint",
-        text: status.installed
-          ? "Coucou's plugin is installed for OpenCode, in every project. Sessions, tool calls and permission requests show up in the island, and you can answer them there."
-          : "Install the plugin to see your OpenCode sessions in the island and approve permissions without leaving what you are doing. One file, every project.",
-      }),
-      h("div", { class: "row" },
-        h("label", { text: "Plugin" }),
-        h("span", { class: "path", text: status.pluginPath }),
-      ),
-      h("div", { class: "row" },
-        h("label", { text: "OpenCode on PATH" }),
-        statusDot(status.opencodeFound),
-      ),
-    );
-
-    if (!status.opencodeFound) {
-      body.append(h("div", {
-        class: "notice warn",
-        text: "opencode wasn't found on your PATH. The plugin can be installed, but OpenCode will only load it once the command exists.",
-      }));
-    }
-
-    const actions = h("div", { class: "row" });
-    actions.append(h("button", {
-      class: "primary",
-      text: status.installed ? "Reinstall plugin…" : "Install plugin…",
-      onclick: () => showPreview(true),
-    }));
-    if (status.installed) {
-      actions.append(h("button", {
-        class: "danger",
-        text: "Uninstall plugin…",
-        onclick: () => showPreview(false),
-      }));
-    }
-    body.append(actions);
-  }
-
-  async function showPreview(install: boolean) {
-    let preview;
-    try {
-      preview = await Bridge.opencodePreview(install);
-    } catch (err) {
-      // A foreign file with the plugin's name, or an unreadable one, stops here
-      // rather than being overwritten.
-      clear(body);
-      body.append(
-        h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
-        h("div", { class: "row" }, h("button", {
-          text: "Back",
-          onclick: () => { clear(body); draw(); },
-        })),
-      );
-      return;
-    }
-    clear(body);
-    body.append(
-      h("div", {
-        class: "hint",
-        text: install
-          ? "This is the exact file that will be written. Restart OpenCode afterwards to load it."
-          : "This removes Coucou's plugin only. Nothing else in the folder is touched.",
-      }),
-      renderDiff(preview.diff),
-      preview.backup
-        ? h("div", { class: "row" }, h("span", { class: "path", text: `Backup → ${preview.backup}` }))
-        : h("div", { class: "row" }, h("span", { class: "hint", text: "Nothing to back up — no file there yet." })),
-    );
-    const confirm = h("button", {
-      class: install ? "primary" : "danger",
-      text: install ? "Back up and write" : "Back up and remove",
-    });
-    confirm.addEventListener("click", async () => {
-      confirm.disabled = true;
-      try {
-        const backup = await Bridge.opencodeApply(install, preview.fingerprint);
-        clear(body);
-        body.append(h("div", {
-          class: "notice ok",
-          text: install
-            ? `Done.${backup ? ` Previous file saved as ${backup}.` : ""} Restart OpenCode to pick the plugin up.`
-            : `Done. Previous file saved as ${backup}.`,
-        }));
-        window.setTimeout(() => void rebuild(), 2600);
-      } catch (err) {
-        confirm.disabled = false;
-        body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
-      }
-    });
-    body.append(h("div", { class: "row" }, confirm, h("button", {
-      text: "Cancel",
-      onclick: () => { clear(body); draw(); },
-    })));
-  }
-
-  draw();
-  return section;
-}
-
-// ── Chat provider section ─────────────────────────────────────────────────────
-
-const ANTHROPIC_MODELS: [string, string][] = [
+const MODELS: [string, string][] = [
   ["claude-opus-5", "Claude Opus 5"],
   ["claude-sonnet-5", "Claude Sonnet 5"],
   ["claude-haiku-4-5", "Claude Haiku 4.5"],
 ];
 
-/** Models fetched from the custom endpoint this session, kept so switching the
- *  provider back and forth does not fire another request. */
-let customModels: ModelInfo[] = [];
-
-/** The active provider only. Switching starts a fresh conversation, because the
- *  two backends cannot read each other's history. */
-function chatSection(present: Record<string, boolean>): HTMLElement {
-  const panel = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
-  const anthropicBtn = h("button", { text: "Anthropic" });
-  const customBtn = h("button", { text: "Custom" });
-
-  function paint() {
-    anthropicBtn.classList.toggle("primary", settings.provider === "anthropic");
-    customBtn.classList.toggle("primary", settings.provider === "custom");
-    clear(panel);
-    panel.append(settings.provider === "custom" ? customPanel(present) : anthropicPanel(present));
-  }
-
-  function pick(provider: "anthropic" | "custom") {
-    if (settings.provider === provider) return;
-    settings.provider = provider;
-    // The island hears settings-changed and drops the old bubbles; saving alone
-    // is enough, there is no separate reset to send.
-    void save();
-    paint();
-  }
-  anthropicBtn.addEventListener("click", () => pick("anthropic"));
-  customBtn.addEventListener("click", () => pick("custom"));
-
-  paint();
-  return h(
-    "section",
-    {},
-    h("h2", {}, h("span", { text: "Chat" })),
-    h("div", {
-      class: "hint",
-      text: "Which model answers when you ask Mochi something. Switching providers starts a fresh conversation.",
-    }),
-    h("div", { class: "row", style: "gap:8px" }, anthropicBtn, customBtn),
-    panel,
-  );
-}
-
-function anthropicPanel(present: Record<string, boolean>): HTMLElement {
-  const hasKey = present["anthropic-api-key"] ?? false;
+function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", {
-    class: "hint",
-    text: hasKey ? "Key saved in the credential manager." : "No key yet — the chat needs one.",
-  });
+  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
 
   const field = h("input", {
     type: "password",
@@ -366,14 +196,13 @@ function anthropicPanel(present: Record<string, boolean>): HTMLElement {
   const feedback = h("div", {});
 
   async function refresh() {
-    const presentKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-    present["anthropic-api-key"] = presentKey;
-    dot.style.background = presentKey ? "#22c55e" : "#f4505e";
-    state.textContent = presentKey
-      ? "Key saved in the credential manager."
+    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    dot.style.background = present ? "#22c55e" : "#f4505e";
+    state.textContent = present
+      ? "Key saved in the Windows Credential Manager."
       : "No key yet — the chat needs one.";
-    field.placeholder = presentKey ? "••••••••••••  (stored)" : "sk-ant-...";
-    clearBtn.style.display = presentKey ? "" : "none";
+    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
+    clearBtn.style.display = present ? "" : "none";
   }
 
   saveBtn.addEventListener("click", async () => {
@@ -402,8 +231,8 @@ function anthropicPanel(present: Record<string, boolean>): HTMLElement {
   });
 
   const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of ANTHROPIC_MODELS) model.append(h("option", { value: id, text: label }));
-  if (!ANTHROPIC_MODELS.some(([id]) => id === settings.model)) {
+  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
+  if (!MODELS.some(([id]) => id === settings.model)) {
     model.append(h("option", { value: settings.model, text: settings.model }));
   }
   model.value = settings.model;
@@ -415,134 +244,13 @@ function anthropicPanel(present: Record<string, boolean>): HTMLElement {
   clearBtn.style.display = hasKey ? "" : "none";
 
   return h(
-    "div",
-    { style: "display:flex;flex-direction:column;gap:12px" },
+    "section",
+    {},
+    h("h2", {}, dot, h("span", { text: "Claude" })),
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: "Model" }), model),
     feedback,
-  );
-}
-
-function customPanel(present: Record<string, boolean>): HTMLElement {
-  const hasKey = present["custom-api-key"] ?? false;
-
-  const endpointInput = h("input", {
-    type: "text",
-    value: settings.customBaseUrl,
-    placeholder: "https://router.example.com/v1",
-    style: "flex:1 1 auto;min-width:0",
-    autocomplete: "off",
-    spellcheck: "false",
-  }) as HTMLInputElement;
-  endpointInput.addEventListener("change", () => {
-    settings.customBaseUrl = endpointInput.value.trim();
-    void save();
-  });
-
-  const keyInput = h("input", {
-    type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-...",
-    style: "flex:1 1 auto;min-width:0",
-    autocomplete: "off",
-    spellcheck: "false",
-  }) as HTMLInputElement;
-  const keyDot = statusDot(hasKey);
-  const keySave = h("button", { class: "primary", text: "Save key" });
-  const keyClear = h("button", { class: "danger", text: "Remove" });
-  keyClear.style.display = hasKey ? "" : "none";
-
-  const model = h("select", {}) as HTMLSelectElement;
-  const status = h("div", {});
-
-  function feedback(cls: string, text: string) {
-    clear(status);
-    status.append(h("div", { class: cls, text }));
-  }
-
-  function fillModels() {
-    clear(model);
-    for (const m of customModels) model.append(h("option", { value: m.id, text: m.name }));
-    // A previously picked model may not be in a fresh list; keep it selectable.
-    if (settings.customModel && !customModels.some((m) => m.id === settings.customModel)) {
-      model.append(h("option", { value: settings.customModel, text: settings.customModel }));
-    }
-    model.value = settings.customModel;
-  }
-  fillModels();
-
-  model.addEventListener("change", () => {
-    settings.customModel = model.value;
-    void save();
-  });
-
-  keySave.addEventListener("click", async () => {
-    const value = keyInput.value.trim();
-    if (!value) return;
-    try {
-      await Bridge.secretSet("custom-api-key", value);
-      present["custom-api-key"] = true;
-      keyInput.value = "";
-      keyInput.placeholder = "••••••••••••  (stored)";
-      keyDot.style.background = "#22c55e";
-      keyClear.style.display = "";
-      feedback("notice ok", "Saved. It never touches disk.");
-    } catch (err) {
-      feedback("notice err", `Could not save: ${String(err)}`);
-    }
-  });
-
-  keyClear.addEventListener("click", async () => {
-    try {
-      await Bridge.secretClear("custom-api-key");
-      present["custom-api-key"] = false;
-      keyInput.placeholder = "sk-...";
-      keyDot.style.background = "#f4505e";
-      keyClear.style.display = "none";
-      feedback("notice ok", "Key removed.");
-    } catch (err) {
-      feedback("notice err", `Could not remove: ${String(err)}`);
-    }
-  });
-
-  const loadBtn = h("button", { class: "primary", text: "Load models" });
-  loadBtn.addEventListener("click", async () => {
-    settings.customBaseUrl = endpointInput.value.trim();
-    // A key typed but not yet saved still counts for this one request.
-    const typed = keyInput.value.trim();
-    loadBtn.disabled = true;
-    feedback("hint", "Loading…");
-    try {
-      await save();
-      const models = await Bridge.customModels(settings.customBaseUrl, typed);
-      customModels = models;
-      fillModels();
-      feedback(
-        models.length ? "notice ok" : "notice warn",
-        models.length
-          ? `Loaded ${models.length} model${models.length === 1 ? "" : "s"}.`
-          : "The endpoint returned no models.",
-      );
-    } catch (err) {
-      feedback("notice err", String(err).replace(/^Error:\s*/, ""));
-    } finally {
-      loadBtn.disabled = false;
-    }
-  });
-
-  return h(
-    "div",
-    { style: "display:flex;flex-direction:column;gap:12px" },
-    h("div", {
-      class: "hint",
-      text: "Any OpenAI-compatible endpoint. Models are read from GET {endpoint}/models, answers from POST {endpoint}/chat/completions.",
-    }),
-    h("div", { class: "row" }, h("label", { text: "Endpoint" }), endpointInput),
-    h("div", { class: "row" }, h("label", { text: "API key" }), keyInput, keySave, keyClear, keyDot),
-    h("div", { class: "row" }, loadBtn,
-      h("span", { class: "hint", text: "then pick one below" })),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
-    status,
   );
 }
 
@@ -720,12 +428,10 @@ async function main() {
   const status = (await Bridge.hooksStatus()) ?? {
     installed: false, settingsPath: "", hookPath: "", hookReady: false,
   };
-  const opencode = (await Bridge.opencodeStatus()) ?? {
-    installed: false, pluginPath: "", opencodeFound: false,
-  };
+
+  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
   const keys = [
-    "anthropic-api-key", "custom-api-key",
     "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
   ];
@@ -736,8 +442,7 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
-    openCodeSection(opencode),
-    chatSection(present),
+    apiSection(hasKey),
     integrationsSection(present),
     generalSection(),
     h("div", {

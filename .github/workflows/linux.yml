@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-22.04
     defaults:
       run:
-        working-directory: windows
+        working-directory: linux
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: windows/package-lock.json
+          cache-dependency-path: linux/package-lock.json
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -46,8 +46,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            windows/target
-          key: linux-cargo-${{ hashFiles('windows/Cargo.lock') }}
+            linux/target
+          key: linux-cargo-${{ hashFiles('linux/Cargo.lock') }}
           restore-keys: linux-cargo-
 
       - name: Install dependencies
@@ -87,8 +87,8 @@ jobs:
         with:
           name: Coucou-Linux
           path: |
-            windows/release/Coucou-*-amd64.deb
-            windows/release/Coucou-*-x86_64.AppImage
+            linux/release/Coucou-*-amd64.deb
+            linux/release/Coucou-*-x86_64.AppImage
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/linux-v')
