@@ -84,7 +84,7 @@ function claudeSection(status: HookStatus): HTMLElement {
     if (!status.hookReady) {
       body.append(h("div", {
         class: "notice warn",
-        text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
+        text: "coucou-hook is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
       }));
     }
 

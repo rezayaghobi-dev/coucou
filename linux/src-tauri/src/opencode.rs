@@ -104,14 +104,12 @@ fn find_opencode() -> bool {
     if crate::find_on_path("opencode").is_some() || crate::find_on_path("opencode2").is_some() {
         return true;
     }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+    if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         for candidate in [
             home.join(".opencode/bin/opencode"),
             home.join(".local/bin/opencode"),
             home.join(".bun/bin/opencode"),
-            home.join(".opencode/bin/opencode.exe"),
-            home.join(".local/bin/opencode.exe"),
         ] {
             if candidate.is_file() {
                 return true;

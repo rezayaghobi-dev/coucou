@@ -397,13 +397,6 @@ fn log_line(message: String) {
 
 // ── Settings window ───────────────────────────────────────────────────────────
 
-/// WebView2 allows exactly one browser environment per app, and its options are
-/// fixed by whichever webview is created first. Every window must therefore ask
-/// for the *same* arguments as the island (see `additionalBrowserArgs` in
-/// tauri.conf.json) — a mismatch makes the second window come up blank, with no
-/// error anywhere.
-const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
-
 /// In a dev build the pages are served by Vite, so the second window needs the
 /// absolute dev URL; a bundled build resolves it inside the app bundle.
 fn settings_page_url(app: &AppHandle) -> WebviewUrl {
@@ -417,13 +410,11 @@ fn settings_page_url(app: &AppHandle) -> WebviewUrl {
 }
 
 /// The settings window is created hidden at launch and only ever shown and
-/// hidden afterwards. A WebView2 window created later — on the main thread or
-/// not — silently comes up blank in this app, so the window that works is the
-/// one that exists before the island's webview does.
+/// hidden afterwards. WebKitGTK gives every window its own webview, so no
+/// shared browser arguments are needed.
 fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
-        .additional_browser_args(BROWSER_ARGS)
         .title("Settings — Coucou")
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
