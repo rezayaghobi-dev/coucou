@@ -27,7 +27,19 @@ fn entry(key: &str) -> Option<Entry> {
 }
 
 pub fn get(key: &str) -> Option<String> {
-    entry(key)?.get_password().ok().filter(|v| !v.is_empty())
+    match entry(key)?.get_password() {
+        // An empty value counts as missing, as on macOS.
+        Ok(v) if !v.is_empty() => Some(v),
+        Ok(_) => None,
+        // A missing key is the normal "not configured yet" case.
+        Err(keyring::Error::NoEntry) => None,
+        // Anything else (locked Secret Service, no daemon, …) looks
+        // like a missing key unless it is logged.
+        Err(e) => {
+            crate::log::line(format!("keyring error reading {key}: {e}"));
+            None
+        }
+    }
 }
 
 pub fn set(key: &str, value: &str) -> Result<(), String> {
