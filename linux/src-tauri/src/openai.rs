@@ -37,6 +37,37 @@ fn endpoint(base_url: &str, path: &str) -> String {
     )
 }
 
+/// The base URL carries the API key on every request, so it must be
+/// https. Plain http is tolerated only for loopback hosts, where a
+/// local server (Ollama, LM Studio, …) has no route off the machine.
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    const REJECTED: &str = "The custom provider base URL must be https (http is only allowed for localhost, 127.0.0.1 or [::1]).";
+    let url = base_url.trim();
+    if url.starts_with("https://") {
+        return Ok(());
+    }
+    let Some(after_scheme) = url.strip_prefix("http://") else {
+        return Err(REJECTED.to_string());
+    };
+    // Host = up to the first '/' (the path may be absent).
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let host = if authority.starts_with('[') {
+        // IPv6 literal such as [::1] or [::1]:11434.
+        let end = authority
+            .find(']')
+            .map(|i| i + 1)
+            .unwrap_or(authority.len());
+        authority[..end].to_string()
+    } else {
+        authority.split(':').next().unwrap_or("").to_string()
+    };
+    if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+        Ok(())
+    } else {
+        Err(REJECTED.to_string())
+    }
+}
+
 /// Pulls the API's own message out of an error body, which is what makes a bad
 /// key or an empty balance obvious instead of a bare status code.
 fn describe_error(status: reqwest::StatusCode, text: &str) -> String {
@@ -54,6 +85,7 @@ fn describe_error(status: reqwest::StatusCode, text: &str) -> String {
 
 /// Models advertised by the endpoint, in the order the server returns them.
 pub async fn list_models(base_url: &str, key: &str) -> Result<Vec<ModelInfo>, String> {
+    validate_base_url(base_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -105,6 +137,7 @@ pub async fn send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
+    validate_base_url(base_url)?;
     chat.begin_turn("custom");
 
     let key = secrets::get("custom-api-key")
@@ -250,7 +283,25 @@ fn attachment(path: &str) -> Option<Attachment> {
 
 #[cfg(test)]
 mod tests {
-    use super::endpoint;
+    use super::{endpoint, validate_base_url};
+
+    #[test]
+    fn validate_base_url_allows_https() {
+        assert!(validate_base_url("https://router.example/v1").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_allows_http_on_loopback() {
+        assert!(validate_base_url("http://localhost:11434/v1").is_ok());
+        assert!(validate_base_url("http://127.0.0.1/v1").is_ok());
+        assert!(validate_base_url("http://[::1]/v1").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_http_elsewhere() {
+        assert!(validate_base_url("http://example.com/v1").is_err());
+        assert!(validate_base_url("http://192.168.1.5/v1").is_err());
+    }
 
     #[test]
     fn endpoint_joins_without_doubling_or_dropping_slashes() {
