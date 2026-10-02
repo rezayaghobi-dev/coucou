@@ -2,6 +2,7 @@
 // here — API keys live in the platform keyring.
 
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +96,10 @@ pub fn load() -> Settings {
 
 pub fn save(settings: &Settings) -> std::io::Result<()> {
     let dir = config_dir();
-    std::fs::create_dir_all(&dir)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)?;
     let json = serde_json::to_vec_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)

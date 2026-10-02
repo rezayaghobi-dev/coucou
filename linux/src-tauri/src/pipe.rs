@@ -3,6 +3,7 @@
 // One connection per hook event. PermissionRequest waits for island's decision.
 
 use std::collections::HashMap;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -53,9 +54,13 @@ fn socket_path() -> PathBuf {
 
 pub fn start(app: AppHandle) {
     let path = socket_path();
-    // Ensure parent directory exists
+    // Ensure parent directory exists, private to this user: the
+    // socket carries every hook payload.
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent);
     }
     // Remove stale socket
     let _ = std::fs::remove_file(&path);
@@ -68,6 +73,9 @@ pub fn start(app: AppHandle) {
                 return;
             }
         };
+        // Hook payloads and permission answers ride this socket: only
+        // this user may connect.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         log::line(format!("hook relay listening on {}", path.display()));
 
         loop {

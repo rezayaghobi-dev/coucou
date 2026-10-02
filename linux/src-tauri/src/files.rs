@@ -2,6 +2,7 @@
 // never touched and the copy survives the drag source going away.
 // The inbox is swept of anything older than a week, as on macOS.
 
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -31,7 +32,11 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     }
 
     let dir = inbox_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| e.to_string())?;
 
     let name = src
         .file_name()
